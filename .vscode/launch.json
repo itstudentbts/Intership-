@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Train Model (Conda)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/train_model.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    },
+    {
+      "name": "Streamlit: Run app (venv)",
+      "type": "python",
+      "request": "launch",
+      "module": "streamlit",
+      "args": ["run", "app/streamlit_app.py"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "interpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe"
+    }
+  ]
+}
