@@ -1,0 +1,29 @@
+[33mcommit 8db4adfd0a5feb6cc60361470bb20bb48e7b7138[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: Salma Elmoussadak <salmaelmoussadk@gmail.com>
+Date:   Wed Jun 10 15:39:52 2026 +0200
+
+    Remove tracked .venv, data, and models; keep source changes and requirements
+
+[33mcommit 4083556e77d7d33fcd87a81494d78b21d1fe7652[m
+Author: Salma Elmoussadak <salmaelmoussadk@gmail.com>
+Date:   Mon Jun 8 16:57:01 2026 +0200
+
+    first training and prediction with 10 classes
+
+[33mcommit 485b18d8df3c0c1838900f5deb75494f1900980e[m
+Author: itstudentbts <Salmaelmoussadak@gmail.com>
+Date:   Fri May 22 08:13:58 2026 +0000
+
+    added requirements.txt
+
+[33mcommit 0197bdbe62157c7036a35a280ce965e4ca7e70c2[m
+Author: itstudentbts <Salmaelmoussadak@gmail.com>
+Date:   Wed May 20 12:00:51 2026 +0000
+
+    Add src folder and update README
+
+[33mcommit bc76b9d499475a4698a2d76d2fa6c97cdc825455[m
+Author: itstudentbts <Salmaelmoussadak@gmail.com>
+Date:   Tue May 19 13:29:20 2026 +0200
+
+    Initial commit

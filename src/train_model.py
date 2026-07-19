@@ -3,10 +3,7 @@ import sys
 try:
     import tensorflow as tf
 except ImportError as err:
-    print("TensorFlow import failed. Check your Python environment and native dependencies.")
-    print(" - On Windows, install the Microsoft Visual C++ Redistributable.")
-    print(" - Make sure your TensorFlow version matches your Python version.")
-    print(" - In Anaconda, a fresh environment with tensorflow and openssl often fixes this.")
+    print("TensorFlow import failed.")
     print("Full error:", err)
     sys.exit(1)
 
@@ -15,64 +12,83 @@ import json
 import os
 import matplotlib.pyplot as plt
 
-# ── settings ──────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════
+# SETTINGS — only change these if needed
+# ══════════════════════════════════════════════════════════
+
 TRAIN_DIR    = r"D:\cesi\ai food\Intership-\data\processed\train"
 VAL_DIR      = r"D:\cesi\ai food\Intership-\data\processed\val"
 TEST_DIR     = r"D:\cesi\ai food\Intership-\data\processed\test"
-MODEL_PATH   = r"D:\cesi\ai food\Intership-\models\food_classifier.h5"
-HISTORY_PATH = r"D:\cesi\ai food\Intership-\models\training_history.json"
+MODEL_PATH   = r"D:\cesi\ai food\Intership-\models\food_classifier_101.h5"
+HISTORY_PATH = r"D:\cesi\ai food\Intership-\models\training_history_101.json"
+CLASS_NAMES_PATH = r"D:\cesi\ai food\Intership-\models\class_names.json"
+PLOT_PATH    = r"D:\cesi\ai food\Intership-\models\training_plot_101.png"
 
-IMAGE_SIZE  = (224, 224)   # MobileNetV2 expects 224x224
-BATCH_SIZE  = 32           # how many images to process at once
-EPOCHS      = 10           # how many times to go through all data
-NUM_CLASSES = 10           # we have 10 food classes
-# ──────────────────────────────────────────────────────────
+IMAGE_SIZE  = (224, 224)
+BATCH_SIZE  = 32
+EPOCHS      = 15           # more epochs for 101 classes
+NUM_CLASSES = 101          # ALL food-101 classes
+# ══════════════════════════════════════════════════════════
 
 
 def verify_directories():
-    required = [TRAIN_DIR, VAL_DIR, TEST_DIR, os.path.dirname(MODEL_PATH)]
-    missing = [path for path in required if not os.path.isdir(path)]
+    """Check all required folders exist before starting."""
+    required = [TRAIN_DIR, VAL_DIR, TEST_DIR,
+                os.path.dirname(MODEL_PATH)]
+    missing = [p for p in required if not os.path.isdir(p)]
     if missing:
-        print("ERROR: Required directories are missing:")
-        for path in missing:
-            print(" -", path)
+        print("ERROR: Missing directories:")
+        for p in missing:
+            print(f"  - {p}")
+        print("\nRun organise_data_101.py first to set up all 101 classes.")
         sys.exit(1)
 
 
-# ── STEP 1: Load and prepare images ───────────────────────
+def count_classes(directory):
+    """Count how many class folders exist."""
+    return len([
+        d for d in os.listdir(directory)
+        if os.path.isdir(os.path.join(directory, d))
+    ])
+
+
+# ══════════════════════════════════════════════════════════
+# STEP 1 — Load data
+# ══════════════════════════════════════════════════════════
 def load_data():
     """
-    Load images from folders.
-    Resize to 224x224 and normalize pixel values 0-1.
-    Apply augmentation to training data only.
+    Load all 101 food classes.
+    Apply augmentation to training set only.
     """
+    print("Setting up data generators...")
 
-    # augmentation for training — makes model more robust
-    # by showing slightly different versions of each image
+    # augmentation — more aggressive for 101 classes
+    # helps model generalise across varied photos
     train_datagen = tf.keras.preprocessing.image.ImageDataGenerator(
-        rescale=1./255,          # normalize: 0-255 → 0-1
-        rotation_range=20,       # randomly rotate up to 20 degrees
-        horizontal_flip=True,    # randomly flip left-right
-        zoom_range=0.15,         # randomly zoom in/out
-        width_shift_range=0.1,   # randomly shift left/right
-        height_shift_range=0.1   # randomly shift up/down
+        rescale=1./255,
+        rotation_range=25,        # rotate up to 25 degrees
+        horizontal_flip=True,     # mirror left-right
+        zoom_range=0.20,          # zoom in/out 20%
+        width_shift_range=0.15,   # shift left/right
+        height_shift_range=0.15,  # shift up/down
+        shear_range=0.10,         # slight shear distortion
+        brightness_range=[0.8, 1.2],  # vary brightness
+        fill_mode='nearest'       # fill empty pixels
     )
 
-    # no augmentation for val/test — just normalize
+    # no augmentation for val/test — just normalise
     val_test_datagen = tf.keras.preprocessing.image.ImageDataGenerator(
         rescale=1./255
     )
 
-    # load training images from folders
-    # class name = folder name automatically
     train_gen = train_datagen.flow_from_directory(
         TRAIN_DIR,
-        target_size=IMAGE_SIZE,   # resize all images to 224x224
+        target_size=IMAGE_SIZE,
         batch_size=BATCH_SIZE,
-        class_mode='categorical'  # multiple classes (not binary)
+        class_mode='categorical',
+        shuffle=True
     )
 
-    # load validation images
     val_gen = val_test_datagen.flow_from_directory(
         VAL_DIR,
         target_size=IMAGE_SIZE,
@@ -80,219 +96,256 @@ def load_data():
         class_mode='categorical'
     )
 
-    # load test images
-    # shuffle=False so results stay in order for evaluation
     test_gen = val_test_datagen.flow_from_directory(
         TEST_DIR,
         target_size=IMAGE_SIZE,
         batch_size=BATCH_SIZE,
         class_mode='categorical',
-        shuffle=False
+        shuffle=False   # keep order for evaluation
     )
+
+    print(f"  Train: {train_gen.samples} images, "
+          f"{len(train_gen.class_indices)} classes")
+    print(f"  Val:   {val_gen.samples} images")
+    print(f"  Test:  {test_gen.samples} images")
 
     return train_gen, val_gen, test_gen
 
 
-# ── STEP 2: Build the model ───────────────────────────────
+# ══════════════════════════════════════════════════════════
+# STEP 2 — Build model
+# ══════════════════════════════════════════════════════════
 def build_model(num_classes):
     """
-    Build transfer learning model using MobileNetV2.
-
-    Structure:
-    MobileNetV2 (frozen) → GlobalAveragePooling → Dropout → Dense output
+    MobileNetV2 base + custom head for num_classes.
+    Identical architecture to your 10-class model —
+    only the output layer size changes (10 → 101).
     """
+    print("Loading MobileNetV2 pretrained weights...")
 
-    # load MobileNetV2 pretrained on ImageNet
-    # include_top=False means we remove Google's original
-    # classification head (1000 classes) and add our own
     base_model = tf.keras.applications.MobileNetV2(
-        input_shape=(224, 224, 3),  # 224x224 RGB image
-        include_top=False,           # remove original top layer
-        weights='imagenet'           # use pretrained weights
+        input_shape=(224, 224, 3),
+        include_top=False,
+        weights='imagenet'
     )
+    base_model.trainable = False  # freeze all base layers
 
-    # freeze all layers in base model
-    # frozen = weights don't change during training
-    # we keep Google's learned knowledge intact
-    base_model.trainable = False
-
-    # build our custom model on top
     model = tf.keras.Sequential([
-
-        # 1. the pretrained base — extracts features from images
         base_model,
-
-        # 2. global average pooling
-        # converts 3D feature maps → 1D vector
-        # like summarising what the model found
         tf.keras.layers.GlobalAveragePooling2D(),
-
-        # 3. batch normalisation
-        # keeps values stable during training
         tf.keras.layers.BatchNormalization(),
-
-        # 4. dropout — randomly turns off 30% of neurons
-        # prevents overfitting (memorising instead of learning)
+        tf.keras.layers.Dropout(0.4),         # slightly higher for 101
+        tf.keras.layers.Dense(256, activation='relu'),  # bigger for 101
+        tf.keras.layers.BatchNormalization(),
         tf.keras.layers.Dropout(0.3),
-
-        # 5. dense hidden layer — 128 neurons
-        # learns combinations of features
         tf.keras.layers.Dense(128, activation='relu'),
-
-        # 6. another dropout
         tf.keras.layers.Dropout(0.2),
-
-        # 7. output layer — one neuron per food class
-        # softmax converts to probabilities that add up to 1.0
-        # e.g. pizza=0.91, sushi=0.05, hamburger=0.04
         tf.keras.layers.Dense(num_classes, activation='softmax')
+        #                      ^^^
+        #                      101 output neurons — one per food class
     ])
 
-    # compile — set how model learns
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss='categorical_crossentropy',  # loss for multi-class
-        metrics=['accuracy']
+        loss='categorical_crossentropy',
+        metrics=['accuracy', 'top_k_categorical_accuracy']
+        #                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        #                     also track top-5 accuracy
+        #                     (is correct class in top 5 guesses?)
     )
 
     return model, base_model
 
 
-# ── STEP 3: Set up callbacks ──────────────────────────────
+# ══════════════════════════════════════════════════════════
+# STEP 3 — Callbacks
+# ══════════════════════════════════════════════════════════
 def get_callbacks():
-    """
-    Callbacks watch training and take actions automatically.
-    """
+    """Automatic model saving, early stopping, lr reduction."""
 
-    # save the best model automatically
-    # only saves when val_accuracy improves
     checkpoint = tf.keras.callbacks.ModelCheckpoint(
         MODEL_PATH,
-        monitor='val_accuracy',   # watch validation accuracy
-        save_best_only=True,      # only save if it improved
-        verbose=1                 # print when it saves
+        monitor='val_accuracy',
+        save_best_only=True,
+        verbose=1
     )
 
-    # stop training early if model stops improving
-    # patience=3 means stop after 3 epochs with no improvement
     early_stop = tf.keras.callbacks.EarlyStopping(
         monitor='val_accuracy',
-        patience=3,
-        restore_best_weights=True,  # go back to best version
+        patience=4,              # wait 4 epochs before stopping
+        restore_best_weights=True,
         verbose=1
     )
 
-    # reduce learning rate when stuck
-    # if no improvement for 2 epochs, divide lr by 10
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
         monitor='val_loss',
-        factor=0.1,       # multiply lr by this
+        factor=0.2,
         patience=2,
+        min_lr=1e-7,
         verbose=1
     )
 
-    return [checkpoint, early_stop, reduce_lr]
+    # print progress every epoch
+    class EpochLogger(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs=None):
+            print(
+                f"\nEpoch {epoch+1} complete — "
+                f"acc: {logs['accuracy']:.3f} | "
+                f"val_acc: {logs['val_accuracy']:.3f} | "
+                f"top5: {logs.get('top_k_categorical_accuracy', 0):.3f}"
+            )
+
+    return [checkpoint, early_stop, reduce_lr, EpochLogger()]
 
 
-# ── STEP 4: Fine tuning ───────────────────────────────────
+# ══════════════════════════════════════════════════════════
+# STEP 4 — Fine tuning
+# ══════════════════════════════════════════════════════════
 def fine_tune(model, base_model, train_gen, val_gen):
     """
-    Phase 2 of training.
-    Unfreeze last 30 layers of MobileNetV2 and retrain
-    with a very small learning rate.
-    This improves accuracy significantly.
+    Unfreeze last 50 layers of MobileNetV2 and retrain
+    with very small learning rate.
+    More layers unfrozen than before (30→50) because
+    food-specific features need more adaptation.
     """
-    print("\nStarting fine tuning...")
+    print("\nFine tuning — unfreezing last 50 layers...")
 
-    # unfreeze the last 30 layers
     base_model.trainable = True
-    for layer in base_model.layers[:-30]:
+    # freeze everything except last 50 layers
+    for layer in base_model.layers[:-50]:
         layer.trainable = False
 
-    # recompile with much smaller learning rate
-    # small lr prevents destroying pretrained weights
+    trainable_count = sum(
+        1 for l in base_model.layers if l.trainable
+    )
+    print(f"  Trainable base layers: {trainable_count}")
+
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),
         loss='categorical_crossentropy',
-        metrics=['accuracy']
+        metrics=['accuracy', 'top_k_categorical_accuracy']
     )
 
-    # train for 5 more epochs
     history_fine = model.fit(
         train_gen,
         validation_data=val_gen,
-        epochs=5,
+        epochs=8,
         callbacks=get_callbacks()
     )
 
     return history_fine
 
 
-# ── STEP 5: Plot results ──────────────────────────────────
-def plot_history(history):
-    """
-    Draw graphs showing training progress.
-    Saves to models folder.
-    """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+# ══════════════════════════════════════════════════════════
+# STEP 5 — Plot results
+# ══════════════════════════════════════════════════════════
+def plot_history(history, suffix=""):
+    """Save accuracy and loss graphs."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    # accuracy graph
-    ax1.plot(history.history['accuracy'], label='train accuracy')
-    ax1.plot(history.history['val_accuracy'], label='val accuracy')
-    ax1.set_title('Model Accuracy')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Accuracy')
-    ax1.legend()
+    # accuracy
+    axes[0].plot(history.history['accuracy'],     label='train')
+    axes[0].plot(history.history['val_accuracy'], label='val')
+    axes[0].set_title('Top-1 Accuracy')
+    axes[0].set_xlabel('Epoch')
+    axes[0].legend()
 
-    # loss graph
-    ax2.plot(history.history['loss'], label='train loss')
-    ax2.plot(history.history['val_loss'], label='val loss')
-    ax2.set_title('Model Loss')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Loss')
-    ax2.legend()
+    # top-5 accuracy
+    if 'top_k_categorical_accuracy' in history.history:
+        axes[1].plot(history.history['top_k_categorical_accuracy'],
+                     label='train top-5')
+        axes[1].plot(history.history['val_top_k_categorical_accuracy'],
+                     label='val top-5')
+        axes[1].set_title('Top-5 Accuracy')
+        axes[1].set_xlabel('Epoch')
+        axes[1].legend()
+
+    # loss
+    axes[2].plot(history.history['loss'],     label='train')
+    axes[2].plot(history.history['val_loss'], label='val')
+    axes[2].set_title('Loss')
+    axes[2].set_xlabel('Epoch')
+    axes[2].legend()
 
     plt.tight_layout()
-    plt.savefig(r"D:\cesi\ai food\Intership-\models\training_plot.png")
-    print("Training plot saved")
+    save_path = PLOT_PATH.replace('.png', f'{suffix}.png')
+    plt.savefig(save_path)
+    print(f"Plot saved: {save_path}")
+    plt.close()
 
 
-# ── STEP 6: Evaluate on test set ─────────────────────────
+# ══════════════════════════════════════════════════════════
+# STEP 6 — Evaluate
+# ══════════════════════════════════════════════════════════
 def evaluate(model, test_gen):
-    """
-    Final evaluation on test data.
-    This is the true performance measure.
-    """
+    """Final test set evaluation."""
     print("\nEvaluating on test set...")
-    loss, accuracy = model.evaluate(test_gen)
-    print(f"Test Loss:     {loss:.4f}")
-    print(f"Test Accuracy: {accuracy:.4f} ({accuracy*100:.1f}%)")
-    return accuracy
+    results = model.evaluate(test_gen, verbose=1)
+
+    print("\n" + "="*40)
+    print(f"Test Loss:          {results[0]:.4f}")
+    print(f"Test Accuracy:      {results[1]:.4f} ({results[1]*100:.1f}%)")
+    if len(results) > 2:
+        print(f"Test Top-5 Acc:     {results[2]:.4f} ({results[2]*100:.1f}%)")
+    print("="*40)
+    return results
 
 
-# ── MAIN — runs everything in order ──────────────────────
+# ══════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════
 def main():
+    print("=" * 55)
+    print("  FOOD CALORIE AI — TRAINING ON ALL 101 CLASSES")
+    print("=" * 55)
 
-    print("="*50)
-    print("FOOD CALORIE AI — MODEL TRAINING")
-    print("="*50)
-
-    # 1. load data
-    print("\nStep 1: Loading data...")
+    # check folders exist
     verify_directories()
+
+    # check actual class count
+    actual_classes = count_classes(TRAIN_DIR)
+    print(f"\nClasses found in train folder: {actual_classes}")
+
+    if actual_classes < 101:
+        print(
+            f"\nWARNING: Only {actual_classes} classes found.\n"
+            "Run organise_data_101.py first to set up all 101 classes."
+        )
+        if actual_classes < 10:
+            sys.exit(1)
+        else:
+            print(f"Continuing with {actual_classes} classes...")
+            global NUM_CLASSES
+            NUM_CLASSES = actual_classes
+
+    # ── Step 1: Load data ──────────────────────────────────
+    print("\nStep 1: Loading data...")
     train_gen, val_gen, test_gen = load_data()
 
-    # save class names for use in prediction later
+    # save class names
     class_names = list(train_gen.class_indices.keys())
-    print(f"Classes found: {class_names}")
+    with open(CLASS_NAMES_PATH, 'w') as f:
+        json.dump(class_names, f)
+    print(f"Saved {len(class_names)} class names")
 
-    # 2. build model
+    # ── Step 2: Build model ────────────────────────────────
     print("\nStep 2: Building model...")
-    model, base_model = build_model(NUM_CLASSES)
+    model, base_model = build_model(len(class_names))
     model.summary()
 
-    # 3. phase 1 training — frozen base
-    print("\nStep 3: Training (Phase 1 — frozen base)...")
+    total     = model.count_params()
+    trainable = sum(
+        tf.size(w).numpy() for w in model.trainable_weights
+    )
+    print(f"\nTotal params:     {total:,}")
+    print(f"Trainable params: {trainable:,}")
+    print(f"Frozen params:    {total - trainable:,}")
+
+    # ── Step 3: Phase 1 training ───────────────────────────
+    print("\nStep 3: Phase 1 training (frozen MobileNetV2)...")
+    print("This will take 2-8 hours on CPU.")
+    print("Consider using Google Colab for GPU speed.\n")
+
     history = model.fit(
         train_gen,
         validation_data=val_gen,
@@ -300,33 +353,31 @@ def main():
         callbacks=get_callbacks()
     )
 
-    # 4. phase 2 — fine tuning
-    print("\nStep 4: Fine tuning (Phase 2)...")
+    # save phase 1 history
+    with open(HISTORY_PATH, 'w') as f:
+        # convert float32 to regular float for JSON
+        h = {k: [float(v) for v in vals]
+             for k, vals in history.history.items()}
+        json.dump(h, f)
+    plot_history(history, suffix="_phase1")
+
+    # ── Step 4: Fine tuning ────────────────────────────────
+    print("\nStep 4: Fine tuning (unfreezing last 50 layers)...")
     fine_tune(model, base_model, train_gen, val_gen)
 
-    # 5. evaluate on test set
-    print("\nStep 5: Evaluating...")
+    # ── Step 5: Evaluate ───────────────────────────────────
+    print("\nStep 5: Final evaluation...")
     evaluate(model, test_gen)
 
-    # 6. save training history
-    print("\nStep 6: Saving history...")
-    with open(HISTORY_PATH, 'w') as f:
-        json.dump(history.history, f)
-    print("History saved")
+    # ── Step 6: Save ───────────────────────────────────────
+    print("\nStep 6: Saving final model...")
+    model.save(MODEL_PATH)
+    print(f"Model saved: {MODEL_PATH}")
+    print(f"Class names: {CLASS_NAMES_PATH}")
 
-    # 7. plot graphs
-    print("\nStep 7: Plotting results...")
-    plot_history(history)
-
-    # 8. save class names
-    class_names_path = r"D:\cesi\ai food\Intership-\models\class_names.json"
-    with open(class_names_path, 'w') as f:
-        json.dump(class_names, f)
-    print(f"Class names saved: {class_names}")
-
-    print("\n" + "="*50)
-    print("TRAINING COMPLETE!")
-    print("="*50)
+    print("\n" + "=" * 55)
+    print("  TRAINING COMPLETE!")
+    print("=" * 55)
 
 
 if __name__ == "__main__":

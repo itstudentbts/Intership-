@@ -1,2 +1,1 @@
-# app/components/__init__.py
-# makes components folder importable
+# makes components a Python package
